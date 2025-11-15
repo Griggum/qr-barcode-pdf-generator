@@ -1,0 +1,48 @@
+input:
+  csv: ids.csv
+
+output:
+  file: output.pdf
+  page_size: A4  # A4 only (portrait)
+  margin_mm: 10
+  dpi: 300  # Print resolution (default: 300)
+  overwrite: true  # Overwrite existing file (default: false, will error)
+
+layout:
+  # Label dimensions (takes precedence over labels_per_row/column)
+  label_width_mm: 60
+  label_height_mm: 40
+  
+  # Grid layout (used if label dimensions not specified)
+  # If both specified, label dimensions take precedence
+  labels_per_row: 3
+  labels_per_column: 7
+  
+  # Spacing between labels
+  horizontal_gap_mm: 5
+  vertical_gap_mm: 5
+  
+  # Arrangement: "horizontal" (QR left, barcode right) or "vertical" (QR top, barcode bottom)
+  code_arrangement: horizontal
+  
+  # Spacing between QR and barcode when arranged horizontally
+  code_spacing_mm: 5
+
+qr:
+  size_mm: 25  # Square QR code size
+  error_correction: M  # L, M, Q, or H (Low, Medium, Quartile, High)
+  quiet_zone: 4  # Module size for quiet zone (default: 4)
+
+barcode:
+  symbology: code128  # code128, code39, ean13, i2of5
+  height_mm: 15  # Height of barcode bars
+  width_factor: 2  # Bar width multiplier (default: 2)
+  quiet_zone: 10  # Quiet zone in mm on each side (default: 10)
+
+text:
+  font_size: 10  # Point size for human-readable label
+  font_name: Helvetica  # Font family
+  position: bottom  # "top", "bottom", or "none"
+  alignment: center  # "left", "center", or "right"
+  margin_mm: 2  # Margin from codes to text
+
