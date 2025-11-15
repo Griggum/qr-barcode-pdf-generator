@@ -19,7 +19,7 @@ class PDFExporter:
     """Exports labels to PDF using reportlab."""
     
     def __init__(self, config: Config, qr_gen: QRGenerator, barcode_gen: BarcodeGenerator, 
-                 layout_engine: LayoutEngine):
+                 layout_engine: LayoutEngine, debug: bool = False):
         """Initialize PDF exporter.
         
         Args:
@@ -27,6 +27,7 @@ class PDFExporter:
             qr_gen: QR code generator
             barcode_gen: Barcode generator
             layout_engine: Layout calculation engine
+            debug: If True, save debug images to debug/ folder
         """
         self.config = config
         self.qr_gen = qr_gen
@@ -34,6 +35,7 @@ class PDFExporter:
         self.layout_engine = layout_engine
         self.output_path = config.get('output', 'file')
         self.dpi = config.get('output', 'dpi')
+        self.debug = debug
         
         # ReportLab uses mm directly, but we need to account for DPI scaling in images
         # 1 mm = 2.83465 points (72 points/inch / 25.4 mm/inch)
@@ -41,6 +43,12 @@ class PDFExporter:
         
         self.canvas = None
         self.current_page = -1
+        
+        # Setup debug folder if needed
+        if self.debug:
+            from pathlib import Path
+            self.debug_dir = Path('debug')
+            self.debug_dir.mkdir(exist_ok=True)
     
     def _mm_to_points(self, mm_value: float) -> float:
         """Convert millimeters to points for reportlab."""
@@ -162,6 +170,13 @@ class PDFExporter:
                 skipped += 1
                 continue
             
+            # Save debug QR image
+            if self.debug:
+                qr_debug_path = self.debug_dir / f"qr_{entry.id}_{index}.png"
+                qr_img.save(qr_debug_path)
+                import click
+                click.echo(f"Debug: Saved QR image to {qr_debug_path} (size: {qr_img.size})", err=True)
+            
             # Generate barcode
             barcode_img = self.barcode_gen.generate(entry.barcode_value)
             if barcode_img is None:
@@ -169,6 +184,13 @@ class PDFExporter:
                 click.echo(f"Warning: Failed to generate barcode for ID: {entry.id}", err=True)
                 skipped += 1
                 continue
+            
+            # Save debug barcode image
+            if self.debug:
+                barcode_debug_path = self.debug_dir / f"barcode_{entry.id}_{index}.png"
+                barcode_img.save(barcode_debug_path)
+                import click
+                click.echo(f"Debug: Saved barcode image to {barcode_debug_path} (size: {barcode_img.size})", err=True)
             
             # Get label position
             label_pos = self.layout_engine.get_label_position(index)
@@ -185,6 +207,20 @@ class PDFExporter:
             # Get content positions
             content_pos = self.layout_engine.get_content_position(label_pos, barcode_width_mm)
             
+            # Get text config for debug output
+            text_config = self.config.get('text')
+            
+            # Debug output for positions
+            if self.debug:
+                import click
+                click.echo(f"Debug: Label {index} ({entry.id}) positions:", err=True)
+                click.echo(f"  Label: x={label_pos.x_mm:.2f}mm, y={label_pos.y_mm:.2f}mm", err=True)
+                click.echo(f"  QR: x={content_pos.qr_x_mm:.2f}mm, y={content_pos.qr_y_mm:.2f}mm, size={self.qr_gen.size_mm}mm", err=True)
+                click.echo(f"  Barcode: x={content_pos.barcode_x_mm:.2f}mm, y={content_pos.barcode_y_mm:.2f}mm, w={barcode_width_mm:.2f}mm, h={self.barcode_gen.height_mm}mm", err=True)
+                if text_config['position'] != 'none':
+                    click.echo(f"  QR Text: x={content_pos.qr_text_x_mm:.2f}mm, y={content_pos.qr_text_y_mm:.2f}mm", err=True)
+                    click.echo(f"  Barcode Text: x={content_pos.barcode_text_x_mm:.2f}mm, y={content_pos.barcode_text_y_mm:.2f}mm", err=True)
+            
             # Draw QR code
             self._draw_image(qr_img, content_pos.qr_x_mm, content_pos.qr_y_mm, 
                            self.qr_gen.size_mm, self.qr_gen.size_mm)
@@ -195,7 +231,6 @@ class PDFExporter:
                            barcode_width_mm, barcode_height_mm)
             
             # Draw text if enabled
-            text_config = self.config.get('text')
             if text_config['position'] != 'none':
                 # Draw text for QR code (centered under/over QR)
                 self._draw_text(entry.qr_value, content_pos.qr_text_x_mm, content_pos.qr_text_y_mm, alignment='center')

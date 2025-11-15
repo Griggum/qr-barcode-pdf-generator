@@ -24,7 +24,7 @@ class BarcodeGenerator:
         Args:
             symbology: Barcode symbology name
             height_mm: Height of barcode bars in millimeters
-            width_factor: Bar width multiplier
+            width_factor: Bar width multiplier (typically 1-3)
             quiet_zone_mm: Quiet zone in millimeters on each side
             dpi: Resolution for image generation
         """
@@ -42,6 +42,13 @@ class BarcodeGenerator:
         # Convert mm to pixels
         self.height_pixels = int((height_mm / 25.4) * dpi)
         self.quiet_zone_pixels = int((quiet_zone_mm / 25.4) * dpi)
+        
+        # Module width in pixels - this is the width of each bar/space module
+        # For reasonable barcode sizes, module_width should be 1-3 pixels
+        # width_factor is used as a multiplier, but we cap it to keep barcodes reasonable
+        # At 300 DPI, 1 pixel = 0.084mm, so module_width of 2 = 0.168mm per module
+        # This creates readable barcodes without being too large
+        self.module_width_pixels = max(1, min(int(width_factor), 3))
     
     def validate(self, data: str) -> Tuple[bool, Optional[str]]:
         """Validate data for the chosen symbology.
@@ -97,9 +104,10 @@ class BarcodeGenerator:
             barcode_instance = self.barcode_class(normalized_data, writer=ImageWriter())
             
             # Generate image with custom settings
+            # module_width should be in pixels, not the width_factor directly
             options = {
                 'module_height': self.height_pixels,
-                'module_width': self.width_factor,
+                'module_width': self.module_width_pixels,  # Use calculated pixel width
                 'quiet_zone': self.quiet_zone_pixels,
                 'font_size': 0,  # No text below barcode
                 'text_distance': 0,
@@ -112,6 +120,23 @@ class BarcodeGenerator:
             # Ensure it's a PIL Image
             if not isinstance(img, Image.Image):
                 img = Image.fromarray(img) if hasattr(img, '__array__') else Image.open(img)
+            
+            # Calculate target width based on data length and desired physical size
+            # Estimate: Code 128 has roughly 11 modules per character + start/stop (11 modules)
+            # Each module is module_width_pixels wide
+            estimated_modules = (len(normalized_data) * 11) + 11
+            estimated_width_pixels = estimated_modules * self.module_width_pixels + (2 * self.quiet_zone_pixels)
+            
+            # Calculate target width in mm (we want the barcode to fit reasonably)
+            # For a 12-digit code, target about 40-50mm width
+            target_width_mm = max(30, min(60, len(normalized_data) * 3.5))  # Rough estimate: 3.5mm per digit
+            target_width_pixels = int((target_width_mm / 25.4) * self.dpi)
+            
+            # Resize to target width while maintaining aspect ratio
+            if img.size[0] > target_width_pixels:
+                aspect_ratio = img.size[1] / img.size[0]
+                new_height = int(target_width_pixels * aspect_ratio)
+                img = img.resize((target_width_pixels, new_height), Image.Resampling.LANCZOS)
             
             return img
             

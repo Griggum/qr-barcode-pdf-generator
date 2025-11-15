@@ -38,6 +38,7 @@ from .pdf_exporter import PDFExporter
 @click.option('--text-position', type=click.Choice(['top', 'bottom', 'none']), help='Text position')
 @click.option('--text-alignment', type=click.Choice(['left', 'center', 'right']), help='Text alignment')
 @click.option('--text-margin-mm', type=float, help='Text margin from codes in mm')
+@click.option('--debug', is_flag=True, help='Save debug images to debug/ folder')
 def main(**kwargs):
     """Generate print-ready A4 PDFs with QR codes and barcodes."""
     
@@ -152,7 +153,8 @@ def main(**kwargs):
     layout_engine = LayoutEngine(config.config)
     
     # Initialize PDF exporter
-    pdf_exporter = PDFExporter(config, qr_gen, barcode_gen, layout_engine)
+    debug_mode = kwargs.get('debug', False)
+    pdf_exporter = PDFExporter(config, qr_gen, barcode_gen, layout_engine, debug=debug_mode)
     
     # Generate PDF
     try:
