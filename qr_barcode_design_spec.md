@@ -476,3 +476,5 @@ overrides) makes the tool suitable for both experimentation and
 production use. Git and UV ensure reproducibility and portability.
 
 This document serves as the foundational blueprint for implementation.
+
+**Note:** For ArUco marker and AprilTag generation, see the separate `aruco_apriltag_design_spec.md` document.
