@@ -11,31 +11,43 @@ import sys
 from .data_loader import DataEntry
 from .qr_generator import QRGenerator
 from .barcode_generator import BarcodeGenerator
-from .layout_engine import LayoutEngine, LabelPosition, ContentPosition
+from .layout_engine import LayoutEngine, LabelPosition, ContentPosition, MarkerPosition
 from .config import Config
+from typing import Optional
 
 
 class PDFExporter:
     """Exports labels to PDF using reportlab."""
     
-    def __init__(self, config: Config, qr_gen: QRGenerator, barcode_gen: BarcodeGenerator, 
-                 layout_engine: LayoutEngine, debug: bool = False):
+    def __init__(self, config: Config, layout_engine: LayoutEngine, 
+                 qr_gen: Optional[QRGenerator] = None, 
+                 barcode_gen: Optional[BarcodeGenerator] = None,
+                 aruco_gen: Optional[object] = None,
+                 apriltag_gen: Optional[object] = None,
+                 debug: bool = False):
         """Initialize PDF exporter.
         
         Args:
             config: Configuration object
-            qr_gen: QR code generator
-            barcode_gen: Barcode generator
             layout_engine: Layout calculation engine
+            qr_gen: QR code generator (for QR/Barcode mode)
+            barcode_gen: Barcode generator (for QR/Barcode mode)
+            aruco_gen: ArUco generator (for ArUco mode)
+            apriltag_gen: AprilTag generator (for AprilTag mode)
             debug: If True, save debug images to debug/ folder
         """
         self.config = config
         self.qr_gen = qr_gen
         self.barcode_gen = barcode_gen
+        self.aruco_gen = aruco_gen
+        self.apriltag_gen = apriltag_gen
         self.layout_engine = layout_engine
         self.output_path = config.get('output', 'file')
         self.dpi = config.get('output', 'dpi')
         self.debug = debug
+        
+        # Determine mode
+        self.is_marker_mode = (aruco_gen is not None) or (apriltag_gen is not None)
         
         # ReportLab uses mm directly, but we need to account for DPI scaling in images
         # 1 mm = 2.83465 points (72 points/inch / 25.4 mm/inch)
@@ -150,6 +162,13 @@ class PDFExporter:
         Returns:
             Tuple of (successful_count, skipped_count)
         """
+        if self.is_marker_mode:
+            return self._export_markers(entries)
+        else:
+            return self._export_qr_barcode(entries)
+    
+    def _export_qr_barcode(self, entries: List[DataEntry]) -> tuple[int, int]:
+        """Export QR codes and barcodes to PDF."""
         successful = 0
         skipped = 0
         
@@ -236,6 +255,100 @@ class PDFExporter:
                 self._draw_text(entry.qr_value, content_pos.qr_text_x_mm, content_pos.qr_text_y_mm, alignment='center')
                 # Draw text for barcode (centered under/over barcode)
                 self._draw_text(entry.barcode_value, content_pos.barcode_text_x_mm, content_pos.barcode_text_y_mm, alignment='center')
+            
+            successful += 1
+        
+        # Finalize PDF
+        if self.canvas:
+            self.canvas.save()
+        
+        return successful, skipped
+    
+    def _export_markers(self, entries: List[DataEntry]) -> tuple[int, int]:
+        """Export ArUco or AprilTag markers to PDF."""
+        successful = 0
+        skipped = 0
+        
+        # Determine which marker generator to use
+        marker_gen = self.aruco_gen if self.aruco_gen else self.apriltag_gen
+        marker_type = 'aruco' if self.aruco_gen else 'apriltag'
+        marker_config = self.config.get('aruco') if self.aruco_gen else self.config.get('apriltag')
+        id_assignment = self.config.get('id_assignment')
+        auto_assign = id_assignment.get('auto_assign_numeric_ids', True)
+        start_index = id_assignment.get('start_index', 0)
+        
+        for index, entry in enumerate(entries):
+            # Determine numeric ID
+            if marker_type == 'aruco':
+                numeric_id = entry.aruco_id
+            else:
+                numeric_id = entry.apriltag_id
+            
+            # Auto-assign if needed
+            if numeric_id is None:
+                if auto_assign:
+                    numeric_id = start_index + index
+                else:
+                    import click
+                    click.echo(f"Warning: Row {index + 1} ({entry.id}) has no {marker_type}_id and auto-assignment is disabled, skipping", err=True)
+                    skipped += 1
+                    continue
+            
+            # Validate ID
+            is_valid, error_msg = marker_gen.validate_id(numeric_id)
+            if not is_valid:
+                import click
+                click.echo(f"Warning: Skipping {entry.id}: {error_msg}", err=True)
+                skipped += 1
+                continue
+            
+            # Generate marker
+            marker_img = marker_gen.generate(numeric_id)
+            if marker_img is None:
+                import click
+                click.echo(f"Warning: Failed to generate {marker_type} marker for ID: {entry.id} (numeric ID: {numeric_id})", err=True)
+                skipped += 1
+                continue
+            
+            # Save debug image
+            if self.debug:
+                marker_debug_path = self.debug_dir / f"{marker_type}_{entry.id}_{index}.png"
+                marker_img.save(marker_debug_path)
+                import click
+                click.echo(f"Debug: Saved {marker_type} image to {marker_debug_path} (size: {marker_img.size})", err=True)
+            
+            # Get label position
+            label_pos = self.layout_engine.get_label_position(index)
+            page_num = self.layout_engine.get_page_number(index)
+            
+            # Start new page if needed
+            if page_num != self.current_page:
+                self._start_new_page()
+            
+            # Get marker footprint size
+            marker_footprint_mm = marker_gen.get_footprint_size_mm()
+            
+            # Get marker position
+            marker_pos = self.layout_engine.get_marker_position(label_pos, marker_footprint_mm)
+            
+            # Debug output
+            if self.debug:
+                import click
+                click.echo(f"Debug: Label {index} ({entry.id}) positions:", err=True)
+                click.echo(f"  Label: x={label_pos.x_mm:.2f}mm, y={label_pos.y_mm:.2f}mm", err=True)
+                click.echo(f"  Marker: x={marker_pos.marker_x_mm:.2f}mm, y={marker_pos.marker_y_mm:.2f}mm, size={marker_footprint_mm:.2f}mm", err=True)
+                if self.config.get('text').get('position') != 'none':
+                    click.echo(f"  Text: x={marker_pos.text_x_mm:.2f}mm, y={marker_pos.text_y_mm:.2f}mm", err=True)
+            
+            # Draw marker
+            self._draw_image(marker_img, marker_pos.marker_x_mm, marker_pos.marker_y_mm,
+                           marker_footprint_mm, marker_footprint_mm)
+            
+            # Draw text if enabled
+            text_config = self.config.get('text')
+            if text_config.get('position') != 'none':
+                self._draw_text(entry.id, marker_pos.text_x_mm, marker_pos.text_y_mm,
+                              alignment=text_config.get('alignment', 'center'))
             
             successful += 1
         

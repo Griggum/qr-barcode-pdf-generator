@@ -1,0 +1,12 @@
+id,aruco_id,apriltag_id,description
+MARKER-001,0,0,Entrance rack
+MARKER-002,1,1,Next to entrance
+MARKER-003,2,2,Behind pillar
+MARKER-004,3,3,Left wall
+MARKER-005,4,4,Right wall
+MARKER-006,5,5,Back corner
+MARKER-007,6,6,Front corner
+MARKER-008,7,7,Storage area
+MARKER-009,8,8,Loading dock
+MARKER-010,9,9,Exit door
+

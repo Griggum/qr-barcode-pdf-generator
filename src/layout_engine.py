@@ -26,6 +26,15 @@ class ContentPosition:
     barcode_text_y_mm: float
 
 
+@dataclass
+class MarkerPosition:
+    """Position information for marker within a label."""
+    marker_x_mm: float
+    marker_y_mm: float
+    text_x_mm: float
+    text_y_mm: float
+
+
 class LayoutEngine:
     """Calculates label and content positions."""
     
@@ -38,9 +47,18 @@ class LayoutEngine:
         self.config = config
         self.output_config = config['output']
         self.layout_config = config['layout']
-        self.qr_config = config['qr']
-        self.barcode_config = config['barcode']
         self.text_config = config['text']
+        
+        # QR/Barcode configs (may not exist in marker mode)
+        self.qr_config = config.get('qr', {})
+        self.barcode_config = config.get('barcode', {})
+        
+        # Marker configs (may not exist in QR/Barcode mode)
+        self.aruco_config = config.get('aruco', {})
+        self.apriltag_config = config.get('apriltag', {})
+        
+        # Determine mode
+        self.is_marker_mode = self.aruco_config.get('enabled', False) or self.apriltag_config.get('enabled', False)
         
         # Calculate usable page area
         margin_mm = self.output_config['margin_mm']
@@ -196,5 +214,62 @@ class LayoutEngine:
             qr_text_y_mm=text_y_mm if text_pos != 'none' else 0,
             barcode_text_x_mm=barcode_text_x_mm if text_pos != 'none' else 0,
             barcode_text_y_mm=text_y_mm if text_pos != 'none' else 0
+        )
+    
+    def get_marker_position(self, label_pos: LabelPosition, marker_footprint_mm: float) -> MarkerPosition:
+        """Calculate positions for marker and text within a label (marker mode).
+        
+        Args:
+            label_pos: Position of the label
+            marker_footprint_mm: Total marker footprint size in mm (including border and quiet zone)
+            
+        Returns:
+            MarkerPosition with all coordinates
+        """
+        text_pos = self.text_config['position']
+        text_align = self.text_config['alignment']
+        text_margin_mm = self.text_config['margin_mm']
+        font_size_pt = self.text_config['font_size']
+        
+        # Convert font size from points to mm (1 point = 0.352778 mm)
+        font_size_mm = font_size_pt * 0.352778
+        
+        # Marker is horizontally centered
+        marker_x_mm = label_pos.x_mm + (self.label_width_mm - marker_footprint_mm) / 2
+        
+        # Vertical positioning depends on text position
+        if text_pos == 'bottom':
+            # Text at bottom, marker above
+            text_y_mm = label_pos.y_mm + self.label_height_mm - font_size_mm - text_margin_mm
+            # Center marker in remaining space above text
+            available_height = self.label_height_mm - font_size_mm - text_margin_mm - text_margin_mm
+            marker_y_mm = label_pos.y_mm + (available_height - marker_footprint_mm) / 2
+        elif text_pos == 'top':
+            # Text at top, marker below
+            text_y_mm = label_pos.y_mm + text_margin_mm + font_size_mm
+            # Center marker in remaining space below text
+            available_height = self.label_height_mm - font_size_mm - text_margin_mm - text_margin_mm
+            marker_y_mm = label_pos.y_mm + text_margin_mm + font_size_mm + text_margin_mm + (available_height - marker_footprint_mm) / 2
+        else:  # none
+            # Marker centered vertically
+            marker_y_mm = label_pos.y_mm + (self.label_height_mm - marker_footprint_mm) / 2
+            text_y_mm = 0
+        
+        # Text X position based on alignment
+        if text_pos != 'none':
+            if text_align == 'center':
+                text_x_mm = label_pos.x_mm + self.label_width_mm / 2
+            elif text_align == 'right':
+                text_x_mm = label_pos.x_mm + self.label_width_mm
+            else:  # left
+                text_x_mm = label_pos.x_mm
+        else:
+            text_x_mm = 0
+        
+        return MarkerPosition(
+            marker_x_mm=marker_x_mm,
+            marker_y_mm=marker_y_mm,
+            text_x_mm=text_x_mm,
+            text_y_mm=text_y_mm
         )
 

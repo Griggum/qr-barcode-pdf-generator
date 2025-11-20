@@ -36,6 +36,7 @@ class Config:
             'output': {
                 'file': 'output.pdf',
                 'page_size': 'A4',
+                'orientation': 'portrait',
                 'margin_mm': 10,
                 'dpi': 300,
                 'overwrite': False
@@ -67,6 +68,31 @@ class Config:
                 'position': 'bottom',
                 'alignment': 'center',
                 'margin_mm': 2
+            },
+            'aruco': {
+                'enabled': False,
+                'dictionary': 'DICT_5X5_100',
+                'pattern_size_mm': 80,
+                'border_bits': 1,
+                'quiet_zone_mm': 5
+            },
+            'apriltag': {
+                'enabled': False,
+                'family': 'tag36h11',
+                'pattern_size_mm': 80,
+                'border_mm': 2,
+                'quiet_zone_mm': 5
+            },
+            'id_assignment': {
+                'auto_assign_numeric_ids': True,
+                'start_index': 0
+            },
+            'marker_common': {
+                'quiet_zone_mm': 5,
+                'add_scale_bar': False,
+                'scale_bar_length_mm': 100,
+                'scale_bar_thickness_mm': 0.5,
+                'print_scaling_note': False
             }
         }
     
@@ -156,12 +182,37 @@ class Config:
             sys.exit(1)
         self.config['text']['alignment'] = text_align
         
-        # Validate code arrangement
-        arrangement = self.config['layout']['code_arrangement'].lower()
-        if arrangement not in ['horizontal', 'vertical']:
-            click.echo(f"Error: Code arrangement must be 'horizontal' or 'vertical', got {arrangement}", err=True)
+        # Validate mode selection (ArUco/AprilTag vs QR/Barcode)
+        aruco_enabled = self.config.get('aruco', {}).get('enabled', False)
+        apriltag_enabled = self.config.get('apriltag', {}).get('enabled', False)
+        
+        if aruco_enabled and apriltag_enabled:
+            click.echo("Error: Both ArUco and AprilTag cannot be enabled simultaneously (v1 limitation)", err=True)
             sys.exit(1)
-        self.config['layout']['code_arrangement'] = arrangement
+        
+        # Validate ArUco configuration if enabled
+        if aruco_enabled:
+            from .markers.aruco_generator import ArUcoGenerator
+            dict_name = self.config['aruco'].get('dictionary', 'DICT_5X5_100')
+            if dict_name not in ArUcoGenerator.DICTIONARIES:
+                click.echo(f"Error: Unknown ArUco dictionary: {dict_name}", err=True)
+                sys.exit(1)
+        
+        # Validate AprilTag configuration if enabled
+        if apriltag_enabled:
+            from .markers.apriltag_generator import AprilTagGenerator
+            family = self.config['apriltag'].get('family', 'tag36h11')
+            if family not in AprilTagGenerator.FAMILIES:
+                click.echo(f"Error: Unknown AprilTag family: {family}", err=True)
+                sys.exit(1)
+        
+        # Validate code arrangement (only for QR/Barcode mode)
+        if not aruco_enabled and not apriltag_enabled:
+            arrangement = self.config['layout']['code_arrangement'].lower()
+            if arrangement not in ['horizontal', 'vertical']:
+                click.echo(f"Error: Code arrangement must be 'horizontal' or 'vertical', got {arrangement}", err=True)
+                sys.exit(1)
+            self.config['layout']['code_arrangement'] = arrangement
         
         # Validate label dimensions vs grid
         layout = self.config['layout']

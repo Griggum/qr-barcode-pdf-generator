@@ -38,7 +38,20 @@ from .pdf_exporter import PDFExporter
 @click.option('--text-position', type=click.Choice(['top', 'bottom', 'none']), help='Text position')
 @click.option('--text-alignment', type=click.Choice(['left', 'center', 'right']), help='Text alignment')
 @click.option('--text-margin-mm', type=float, help='Text margin from codes in mm')
+@click.option('--aruco-enabled', is_flag=True, help='Enable ArUco marker generation')
+@click.option('--aruco-dict', type=str, help='ArUco dictionary (e.g., DICT_5X5_100)')
+@click.option('--aruco-pattern-size-mm', type=float, help='ArUco pattern size in mm')
+@click.option('--aruco-border-bits', type=int, help='ArUco border bits')
+@click.option('--aruco-quiet-zone-mm', type=float, help='ArUco quiet zone in mm')
+@click.option('--apriltag-enabled', is_flag=True, help='Enable AprilTag generation')
+@click.option('--apriltag-family', type=str, help='AprilTag family (e.g., tag36h11)')
+@click.option('--apriltag-pattern-size-mm', type=float, help='AprilTag pattern size in mm')
+@click.option('--apriltag-border-mm', type=float, help='AprilTag border in mm')
+@click.option('--apriltag-quiet-zone-mm', type=float, help='AprilTag quiet zone in mm')
+@click.option('--auto-assign-numeric-ids', is_flag=True, default=None, help='Auto-assign numeric IDs from row index')
+@click.option('--start-index', type=int, help='Starting index for auto-assigned numeric IDs')
 @click.option('--debug', is_flag=True, help='Save debug images to debug/ folder')
+@click.option('--dry-run', is_flag=True, help='Validate configuration without generating PDF')
 def main(**kwargs):
     """Generate print-ready A4 PDFs with QR codes and barcodes."""
     
@@ -51,8 +64,9 @@ def main(**kwargs):
     if kwargs.get('output'):
         cli_overrides.setdefault('output', {})['file'] = kwargs['output']
     
-    if kwargs.get('overwrite') is not None:
-        cli_overrides.setdefault('output', {})['overwrite'] = kwargs['overwrite']
+    # Only override overwrite when flag explicitly provided (avoid forcing False by default)
+    if kwargs.get('overwrite'):
+        cli_overrides.setdefault('output', {})['overwrite'] = True
     
     if kwargs.get('margin_mm') is not None:
         cli_overrides.setdefault('output', {})['margin_mm'] = kwargs['margin_mm']
@@ -120,11 +134,45 @@ def main(**kwargs):
     if kwargs.get('text_margin_mm') is not None:
         cli_overrides.setdefault('text', {})['margin_mm'] = kwargs['text_margin_mm']
     
+    # Marker mode CLI overrides
+    # Only enable marker modes when flags are explicitly passed; don't override config defaults
+    if kwargs.get('aruco_enabled'):
+        cli_overrides.setdefault('aruco', {})['enabled'] = True
+    if kwargs.get('aruco_dict'):
+        cli_overrides.setdefault('aruco', {})['dictionary'] = kwargs['aruco_dict']
+    if kwargs.get('aruco_pattern_size_mm') is not None:
+        cli_overrides.setdefault('aruco', {})['pattern_size_mm'] = kwargs['aruco_pattern_size_mm']
+    if kwargs.get('aruco_border_bits') is not None:
+        cli_overrides.setdefault('aruco', {})['border_bits'] = kwargs['aruco_border_bits']
+    if kwargs.get('aruco_quiet_zone_mm') is not None:
+        cli_overrides.setdefault('aruco', {})['quiet_zone_mm'] = kwargs['aruco_quiet_zone_mm']
+    
+    if kwargs.get('apriltag_enabled'):
+        cli_overrides.setdefault('apriltag', {})['enabled'] = True
+    if kwargs.get('apriltag_family'):
+        cli_overrides.setdefault('apriltag', {})['family'] = kwargs['apriltag_family']
+    if kwargs.get('apriltag_pattern_size_mm') is not None:
+        cli_overrides.setdefault('apriltag', {})['pattern_size_mm'] = kwargs['apriltag_pattern_size_mm']
+    if kwargs.get('apriltag_border_mm') is not None:
+        cli_overrides.setdefault('apriltag', {})['border_mm'] = kwargs['apriltag_border_mm']
+    if kwargs.get('apriltag_quiet_zone_mm') is not None:
+        cli_overrides.setdefault('apriltag', {})['quiet_zone_mm'] = kwargs['apriltag_quiet_zone_mm']
+    
+    if kwargs.get('auto_assign_numeric_ids') is not None:
+        cli_overrides.setdefault('id_assignment', {})['auto_assign_numeric_ids'] = kwargs['auto_assign_numeric_ids']
+    if kwargs.get('start_index') is not None:
+        cli_overrides.setdefault('id_assignment', {})['start_index'] = kwargs['start_index']
+    
     # Load configuration
     try:
         config = Config(config_path=kwargs.get('config'), cli_overrides=cli_overrides)
     except SystemExit:
         sys.exit(1)
+    
+    # Determine mode
+    aruco_enabled = config.get('aruco', 'enabled')
+    apriltag_enabled = config.get('apriltag', 'enabled')
+    is_marker_mode = aruco_enabled or apriltag_enabled
     
     # Load data
     try:
@@ -133,28 +181,80 @@ def main(**kwargs):
     except SystemExit:
         sys.exit(1)
     
-    # Initialize generators
-    qr_gen = QRGenerator(
-        size_mm=config.get('qr', 'size_mm'),
-        error_correction=config.get('qr', 'error_correction'),
-        quiet_zone=config.get('qr', 'quiet_zone'),
-        dpi=config.get('output', 'dpi')
-    )
+    # Handle auto-assignment of numeric IDs if needed
+    if is_marker_mode:
+        id_assignment = config.get('id_assignment')
+        auto_assign = id_assignment.get('auto_assign_numeric_ids', True)
+        start_index = id_assignment.get('start_index', 0)
+        
+        for index, entry in enumerate(entries):
+            if aruco_enabled and entry.aruco_id is None and auto_assign:
+                entry.aruco_id = start_index + index
+            elif apriltag_enabled and entry.apriltag_id is None and auto_assign:
+                entry.apriltag_id = start_index + index
     
-    barcode_gen = BarcodeGenerator(
-        symbology=config.get('barcode', 'symbology'),
-        height_mm=config.get('barcode', 'height_mm'),
-        width_factor=config.get('barcode', 'width_factor'),
-        quiet_zone_mm=config.get('barcode', 'quiet_zone'),
-        dpi=config.get('output', 'dpi')
-    )
+    # Initialize generators based on mode
+    qr_gen = None
+    barcode_gen = None
+    aruco_gen = None
+    apriltag_gen = None
+    
+    if is_marker_mode:
+        if aruco_enabled:
+            from .markers.aruco_generator import ArUcoGenerator
+            aruco_gen = ArUcoGenerator(
+                dictionary=config.get('aruco', 'dictionary'),
+                pattern_size_mm=config.get('aruco', 'pattern_size_mm'),
+                border_bits=config.get('aruco', 'border_bits'),
+                quiet_zone_mm=config.get('aruco', 'quiet_zone_mm'),
+                dpi=config.get('output', 'dpi')
+            )
+        elif apriltag_enabled:
+            from .markers.apriltag_generator import AprilTagGenerator
+            apriltag_gen = AprilTagGenerator(
+                family=config.get('apriltag', 'family'),
+                pattern_size_mm=config.get('apriltag', 'pattern_size_mm'),
+                border_mm=config.get('apriltag', 'border_mm'),
+                quiet_zone_mm=config.get('apriltag', 'quiet_zone_mm'),
+                dpi=config.get('output', 'dpi')
+            )
+    else:
+        # QR/Barcode mode
+        qr_gen = QRGenerator(
+            size_mm=config.get('qr', 'size_mm'),
+            error_correction=config.get('qr', 'error_correction'),
+            quiet_zone=config.get('qr', 'quiet_zone'),
+            dpi=config.get('output', 'dpi')
+        )
+        
+        barcode_gen = BarcodeGenerator(
+            symbology=config.get('barcode', 'symbology'),
+            height_mm=config.get('barcode', 'height_mm'),
+            width_factor=config.get('barcode', 'width_factor'),
+            quiet_zone_mm=config.get('barcode', 'quiet_zone'),
+            dpi=config.get('output', 'dpi')
+        )
     
     # Initialize layout engine
     layout_engine = LayoutEngine(config.config)
     
     # Initialize PDF exporter
     debug_mode = kwargs.get('debug', False)
-    pdf_exporter = PDFExporter(config, qr_gen, barcode_gen, layout_engine, debug=debug_mode)
+    pdf_exporter = PDFExporter(
+        config, layout_engine,
+        qr_gen=qr_gen,
+        barcode_gen=barcode_gen,
+        aruco_gen=aruco_gen,
+        apriltag_gen=apriltag_gen,
+        debug=debug_mode
+    )
+    
+    # Dry-run mode
+    if kwargs.get('dry_run', False):
+        click.echo("Dry-run: Configuration validated successfully")
+        click.echo(f"Mode: {'ArUco' if aruco_enabled else 'AprilTag' if apriltag_enabled else 'QR/Barcode'}")
+        click.echo(f"Entries to process: {len(entries)}")
+        sys.exit(0)
     
     # Generate PDF
     try:

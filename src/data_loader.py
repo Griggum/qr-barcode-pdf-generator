@@ -7,12 +7,15 @@ import click
 
 
 class DataEntry:
-    """Represents a single data entry with ID, QR value, and barcode value."""
+    """Represents a single data entry with ID, QR value, barcode value, and optional marker IDs."""
     
-    def __init__(self, id: str, qr_value: Optional[str] = None, barcode_value: Optional[str] = None):
+    def __init__(self, id: str, qr_value: Optional[str] = None, barcode_value: Optional[str] = None,
+                 aruco_id: Optional[int] = None, apriltag_id: Optional[int] = None):
         self.id = id.strip() if id else ""
         self.qr_value = (qr_value.strip() if qr_value else self.id) or self.id
         self.barcode_value = (barcode_value.strip() if barcode_value else self.id) or self.id
+        self.aruco_id = aruco_id
+        self.apriltag_id = apriltag_id
 
 
 class DataLoader:
@@ -70,7 +73,22 @@ class DataLoader:
                 qr_value = row.get('qr_value', '').strip() if 'qr_value' in row else None
                 barcode_value = row.get('barcode_value', '').strip() if 'barcode_value' in row else None
                 
-                entries.append(DataEntry(entry_id, qr_value, barcode_value))
+                # Get optional marker IDs
+                aruco_id = None
+                if 'aruco_id' in row and row.get('aruco_id', '').strip():
+                    try:
+                        aruco_id = int(row['aruco_id'].strip())
+                    except ValueError:
+                        click.echo(f"Warning: Row {row_num} has invalid aruco_id, will use auto-assignment", err=True)
+                
+                apriltag_id = None
+                if 'apriltag_id' in row and row.get('apriltag_id', '').strip():
+                    try:
+                        apriltag_id = int(row['apriltag_id'].strip())
+                    except ValueError:
+                        click.echo(f"Warning: Row {row_num} has invalid apriltag_id, will use auto-assignment", err=True)
+                
+                entries.append(DataEntry(entry_id, qr_value, barcode_value, aruco_id, apriltag_id))
             
             file_handle.close()
             

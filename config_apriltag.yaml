@@ -1,0 +1,47 @@
+input:
+  csv: markers.csv
+
+output:
+  file: apriltags.pdf
+  page_size: A4
+  orientation: portrait
+  margin_mm: 10
+  dpi: 300
+  overwrite: true
+
+layout:
+  label_width_mm: 110
+  label_height_mm: 110
+  labels_per_row: 1
+  labels_per_column: 2
+  horizontal_gap_mm: 10
+  vertical_gap_mm: 10
+
+marker_common:
+  quiet_zone_mm: 5
+  add_scale_bar: false
+  scale_bar_length_mm: 100
+  scale_bar_thickness_mm: 0.5
+  print_scaling_note: false
+
+aruco:
+  enabled: false
+
+apriltag:
+  enabled: true
+  family: tag36h11
+  pattern_size_mm: 90
+  border_mm: 2
+  quiet_zone_mm: 5
+
+text:
+  font_size: 12
+  font_name: Helvetica
+  position: bottom
+  alignment: center
+  margin_mm: 3
+
+id_assignment:
+  auto_assign_numeric_ids: true
+  start_index: 0
+
