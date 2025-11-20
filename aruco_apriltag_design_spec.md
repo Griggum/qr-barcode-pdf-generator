@@ -1,694 +1,786 @@
-# ArUco & AprilTag Document Generator -- Design Specification
+# ArUco & AprilTag Document Generator — Design Specification
+
+**File:** `aruco_apriltag_design_spec.md`  
+**Scope:** Extension of the QR & Barcode Document Generator to support **ArUco** and **AprilTag** marker sheets for computer vision, robotics, drone navigation, and camera calibration.
+
+---
 
 ## 1. Overview
 
-This document extends the QR & Barcode Document Generator to support **ArUco markers** and **AprilTags** for computer vision, robotics, and camera calibration applications. This specification covers the generation of print-ready A4 PDFs containing ArUco markers or AprilTags for a list of provided IDs.
+This design specifies a command‑line tool that generates **print‑ready A4 PDFs** containing **ArUco markers** or **AprilTags** laid out in a configurable grid. The tool is a *companion* to the existing QR & Barcode generator and shares the same codebase and architectural patterns (YAML configuration, CLI overrides, CSV input, UV‑managed Python environment, Git for version control).
 
-**ArUco & AprilTag markers:** Each ID corresponds to:
-- An ArUco marker (with selectable dictionary) OR
-- An AprilTag (with selectable family)
-- A human‑readable text label beneath the marker
-- Typically larger in size for distance detection (camera calibration, pose estimation, robotics)
+Each logical item/row from the CSV results in a **label** on one of the pages. A label contains:
 
-The system allows for: - YAML configuration files (default) - CLI arguments that override YAML - CSV input for ID lists - Scalable layout and marker sizes - Multiple entries placed efficiently on each A4 sheet - Git version control for project management
+- One **ArUco marker** (from a selected dictionary) **or**
+- One **AprilTag** (from a selected family)
+- Optional **human‑readable text** (e.g., an ID, semantic label, or location code)
 
-**Note:** This is a companion specification to the main QR & Barcode design spec. The implementation shares the same codebase structure but operates in separate modes.
+The tool is optimized for:
 
-------------------------------------------------------------------------
+- Larger marker sizes than typical QR codes
+- Reliable detection at distance, in robotics/drone/warehouse contexts
+- Repeatable physical size using millimeter-based layout and fixed DPI
 
-## 2. Goals
+---
 
--   Automatically generate printable documents for testing marker detection
-    workflows (including robotics, camera calibration, pose estimation, augmented reality).
--   Support flexible sizing of ArUco markers and AprilTags (typically larger than QR codes).
--   Support multiple ArUco dictionaries and AprilTag families.
--   Allow easy customization via YAML.
--   Provide reproducible builds and environment isolation using UV.
--   Produce consistent, easy‑to‑print A4 PDFs.
--   Support larger marker sizes optimized for distance detection.
+## 2. High‑Level Goals and Non‑Goals
 
-------------------------------------------------------------------------
+### 2.1 Goals
 
-## 3. Input Sources
+- Generate **print‑ready A4 PDFs** containing ArUco markers or AprilTags arranged in a grid.
+- Allow **flexible sizing** of markers (in millimeters) for different detection distances.
+- Support multiple **ArUco dictionaries** and **AprilTag families** with ID validation.
+- Use **YAML configuration** as the primary configuration mechanism, with **CLI options** overriding YAML.
+- Read **CSV files** as the source of logical IDs and optional numeric marker IDs.
+- Provide robust **validation and error handling**, with clear summaries and exit codes.
+- Ensure **reproducible builds and environments** via UV and Git.
+- Keep the design extensible for future marker types or output formats.
 
-### 3.1 CSV Input (IDs)
+### 2.2 Non‑Goals (v1)
 
-The tool accepts a CSV file with at least one column. The file must use **UTF-8 encoding** and include a header row.
+- Mixed ArUco + AprilTag pages (v1 is single‑mode per run).
+- On‑screen interactive preview or GUI.
+- Incremental PDF editing/merging; each run produces a fresh PDF.
+- Real‑time marker detection or validation from camera input.
 
-**Required format (minimum):**
+---
 
-    id
-    MARKER-001
-    MARKER-002
-    ...
+## 3. Modes and Core Behavior
 
-**Extended format (optional):**
+The tool operates in **one active marker mode per run**:
 
-    id,aruco_id,apriltag_id
-    MARKER-001,0,0
-    MARKER-002,1,1
-    MARKER-003,2,2
-    MARKER-004,10,
-    MARKER-005,,5
+- **ArUco Mode**
+  - Generates labels containing **only ArUco markers**.
+- **AprilTag Mode**
+  - Generates labels containing **only AprilTags**.
 
-**Rules:**
-- Header row is **required** (first line must contain column names)
-- If `aruco_id` is missing or empty, defaults to row index (0-based) or can be explicitly set
-- If `apriltag_id` is missing or empty, defaults to row index (0-based) or can be explicitly set
-- Empty cells are treated as missing values (default to row index)
-- Whitespace around values is trimmed
-- Invalid rows (missing `id` column) will be skipped with a warning
-- ArUco and AprilTag IDs must be valid integers within the dictionary/family range
+### 3.1 Mode Selection Rules
 
-------------------------------------------------------------------------
+- `aruco.enabled: true` and `apriltag.enabled: false` → **ArUco mode**
+- `aruco.enabled: false` and `apriltag.enabled: true` → **AprilTag mode**
+- `aruco.enabled: false` and `apriltag.enabled: false` → **configuration error**
+- `aruco.enabled: true` and `apriltag.enabled: true` → **configuration error (v1)**
 
-## 4. Configuration Model
+> Rationale: Failing fast when both are enabled avoids accidental precedence bugs and keeps behavior explicit. A future *mixed mode* could be introduced as a separate, opt‑in configuration.
 
-### 4.1 YAML Configuration (default)
+---
 
-Example `config_aruco.yaml`:
+## 4. Input Data Model
 
-``` yaml
+### 4.1 CSV Input (Logical IDs)
+
+The CSV provides logical IDs and optional explicit numeric marker/tag IDs.
+
+**Requirements:**
+
+- Encoding: **UTF‑8**
+- A **header row** is required.
+- Minimum column: `id` (logical label ID).
+
+**Minimal format example:**
+
+```csv
+id
+MARKER-001
+MARKER-002
+MARKER-003
+```
+
+**Extended format example:**
+
+```csv
+id,aruco_id,apriltag_id,description
+RACK-A-01,0,0,Entrance rack
+RACK-A-02,1,1,Next to entrance
+RACK-B-01,2,2,Behind pillar
+RACK-C-99,,5,Custom AprilTag ID only
+ZONE-X-01,10,,ArUco only
+```
+
+### 4.2 ID Rules
+
+- `id` (string):
+  - Required for every row; rows without `id` are **skipped with a warning**.
+  - Used purely as **human‑readable text**; does not have to match numeric marker ID.
+- `aruco_id` (int, optional):
+  - Used only in **ArUco mode**.
+  - If present and non‑empty, must be a non‑negative integer within the selected dictionary’s range.
+- `apriltag_id` (int, optional):
+  - Used only in **AprilTag mode**.
+  - If present and non‑empty, must be a non‑negative integer within the selected family’s valid range.
+
+### 4.3 Automatic Numeric ID Assignment
+
+To support quick experiments, numeric IDs may be **auto-assigned** when the numeric ID columns are not specified.
+
+Config flag:
+
+```yaml
+id_assignment:
+  auto_assign_numeric_ids: true  # default: true
+  start_index: 0                 # default: 0
+```
+
+Behavior per row:
+
+- If in ArUco mode:
+  - If `aruco_id` is present and valid → use it.
+  - Else if `auto_assign_numeric_ids: true` → use `start_index + row_index_0_based`.
+  - Else → **row is skipped with a warning**.
+- If in AprilTag mode:
+  - Analogous behavior using `apriltag_id`.
+
+> Each auto-assigned ID is logged (at least in verbose mode) so users know which rows mapped to which numeric IDs.
+
+---
+
+## 5. Configuration Model
+
+### 5.1 YAML Configuration (Primary)
+
+The YAML file is the canonical configuration. CLI arguments override values in this file.
+
+#### Example ArUco configuration
+
+```yaml
 input:
   csv: markers.csv
 
 output:
   file: aruco_markers.pdf
-  page_size: A4  # A4 only (portrait)
+  page_size: A4
+  orientation: portrait        # "portrait" or "landscape"
   margin_mm: 10
-  dpi: 300  # Print resolution (default: 300)
-  overwrite: true  # Overwrite existing file (default: false, will error)
+  dpi: 300
+  overwrite: false             # default: false
 
 layout:
-  # Label dimensions (takes precedence over labels_per_row/column)
-  label_width_mm: 120
+  label_width_mm: 120          # optional; see precedence rules
   label_height_mm: 120
-  
-  # Grid layout (used if label dimensions not specified)
-  # If both specified, label dimensions take precedence
   labels_per_row: 1
   labels_per_column: 2
-  
-  # Spacing between labels
   horizontal_gap_mm: 10
   vertical_gap_mm: 10
+  last_row_alignment: left     # "left" or "center" (v1 may implement left only)
 
-# ArUco marker configuration
-aruco:
-  enabled: true  # Enable ArUco marker generation
-  dictionary: DICT_5X5_100  # ArUco dictionary (see supported dictionaries)
-  size_mm: 100  # Square marker size (typically larger than QR codes)
-  border_bits: 1  # Border width in bits (default: 1)
-  quiet_zone_mm: 5  # Quiet zone around marker in mm (default: 5)
+marker_common:
+  # Geometry conventions apply to both ArUco and AprilTag.
+  # See Section 6 for definitions.
+  quiet_zone_mm: 5             # quiet margin OUTSIDE the pattern
+  add_scale_bar: true          # optional: draw a 10 cm scale bar on each page
+  scale_bar_length_mm: 100
+  scale_bar_thickness_mm: 0.5
+  print_scaling_note: true     # e.g. "Print at 100% / no scaling"
 
-text:
-  font_size: 12  # Point size for human-readable label
-  font_name: Helvetica  # Font family
-  position: bottom  # "top", "bottom", or "none"
-  alignment: center  # "left", "center", or "right"
-  margin_mm: 3  # Margin from marker to text
-```
-
-Example `config_apriltag.yaml`:
-
-``` yaml
-input:
-  csv: markers.csv
-
-output:
-  file: apriltags.pdf
-  page_size: A4  # A4 only (portrait)
-  margin_mm: 10
-  dpi: 300  # Print resolution (default: 300)
-  overwrite: true  # Overwrite existing file (default: false, will error)
-
-layout:
-  # Label dimensions (takes precedence over labels_per_row/column)
-  label_width_mm: 110
-  label_height_mm: 110
-  
-  # Grid layout (used if label dimensions not specified)
-  labels_per_row: 1
-  labels_per_column: 2
-  
-  # Spacing between labels
-  horizontal_gap_mm: 10
-  vertical_gap_mm: 10
-
-# AprilTag configuration
-apriltag:
-  enabled: true  # Enable AprilTag generation
-  family: tag36h11  # AprilTag family (see supported families)
-  size_mm: 90  # Square tag size (typically larger than QR codes)
-  border_mm: 2  # Border width in mm (default: 2)
-  quiet_zone_mm: 5  # Quiet zone around tag in mm (default: 5)
-
-text:
-  font_size: 12  # Point size for human-readable label
-  font_name: Helvetica  # Font family
-  position: bottom  # "top", "bottom", or "none"
-  alignment: center  # "left", "center", or "right"
-  margin_mm: 3  # Margin from marker to text
-```
-
-### 4.2 CLI Options (override YAML)
-
-Examples:
-
-    python generate.py --aruco-enabled --aruco-dict DICT_5X5_100 --aruco-size-mm 100
-    python generate.py --apriltag-enabled --apriltag-family tag25h9 --apriltag-size-mm 90
-    python generate.py --config config_aruco.yaml --aruco-size-mm 120 --label-width-mm 140
-    python generate.py --csv markers.csv --output result.pdf --overwrite --apriltag-enabled
-
-CLI options always override YAML values. All YAML configuration options have corresponding CLI flags.
-
-### 4.3 Mode Selection
-
-The system supports two marker generation modes:
-
-- **ArUco Mode:** Generates ArUco markers only (typically larger, fewer per page)
-- **AprilTag Mode:** Generates AprilTags only (typically larger, fewer per page)
-
-**Mode Selection Rules:**
-- If `aruco.enabled: true`, ArUco mode is active
-- If `apriltag.enabled: true`, AprilTag mode is active
-- If both ArUco and AprilTag are enabled, ArUco takes precedence (warning logged)
-- Only one mode should be active per run
-- Each mode uses its own layout configuration (label sizes may differ)
-- Separate output files recommended for different marker types
-
-**Example configurations:**
-
-``` yaml
-# ArUco mode
 aruco:
   enabled: true
   dictionary: DICT_5X5_100
-  size_mm: 100
-layout:
-  label_width_mm: 120
-  label_height_mm: 120
-  labels_per_row: 1
-  labels_per_column: 2
-apriltag:
-  enabled: false
+  pattern_size_mm: 90          # size of the black/white pattern (square)
+  border_bits: 1               # OpenCV border bits
+  # total marker footprint (pattern + quiet zones) must fit within label
 
-# AprilTag mode
 apriltag:
-  enabled: true
+  enabled: false               # must be false in ArUco mode
   family: tag36h11
-  size_mm: 90
-layout:
-  label_width_mm: 110
-  label_height_mm: 110
-  labels_per_row: 1
-  labels_per_column: 2
-aruco:
-  enabled: false
+  pattern_size_mm: 90
+  border_mm: 2                 # solid black border around the pattern
+  # total marker footprint is pattern_size_mm + 2*border_mm + 2*quiet_zone_mm
+
+text:
+  font_size_pt: 12
+  font_name: Helvetica
+  position: bottom             # "top", "bottom", or "none"
+  alignment: center            # "left", "center", or "right"
+  margin_mm: 3                 # distance between marker box and text baseline
+
+id_assignment:
+  auto_assign_numeric_ids: true
+  start_index: 0
+
+logging:
+  level: info                  # "debug", "info", "warning", "error"
+  summary_json: null           # e.g. "summary.json" for machine-readable summary
+
+validation:
+  require_all_ids_valid: false # if true, a single invalid ID causes fatal error
 ```
 
-### 4.4 Configuration Validation
+### 5.2 CLI Options (Override YAML)
 
-The system validates configuration on startup:
+All key YAML options have corresponding CLI flags. Examples:
 
-- **Label dimensions**: Must fit within page margins (with gaps)
-- **Label count**: If both `label_width_mm`/`label_height_mm` and `labels_per_row`/`labels_per_column` are specified, dimensions take precedence
-- **ArUco dictionary**: Must be a supported dictionary
-- **AprilTag family**: Must be a supported family
-- **ArUco/AprilTag IDs**: Must be valid integers within the dictionary/family range
-- **File paths**: Input CSV must exist; output directory must be writable
-- **DPI**: Must be between 72 and 600 (default: 300)
-- **Margins**: Must be non-negative and leave at least 20mm usable space
-- **Mode selection**: Exactly one of ArUco or AprilTag must be enabled
-
-Invalid configurations will cause the tool to exit with an error message.
+```bash
+# ArUco run with overrides
+python generate.py \
+  --config config_aruco.yaml \
+  --aruco-enabled \
+  --aruco-dict DICT_5X5_100 \
+  --aruco-pattern-size-mm 100 \
+  --label-width-mm 130 \
+  --label-height-mm 130 \
+  --output-file aruco_custom.pdf \
+  --overwrite
 
-------------------------------------------------------------------------
-
-## 5. Supported ArUco Dictionaries
-
-ArUco markers use predefined dictionaries that determine the marker size and maximum number of unique markers.
-
--   **DICT_4X4_50** (recommended for small sets)
-    - 4×4 bit markers
-    - Up to 50 unique markers (IDs 0-49)
-    - Smallest marker size, good for close-range detection
-
--   **DICT_4X4_100**
-    - 4×4 bit markers
-    - Up to 100 unique markers (IDs 0-99)
-
--   **DICT_4X4_250**
-    - 4×4 bit markers
-    - Up to 250 unique markers (IDs 0-249)
-
--   **DICT_4X4_1000**
-    - 4×4 bit markers
-    - Up to 1000 unique markers (IDs 0-999)
-
--   **DICT_5X5_50** (recommended default)
-    - 5×5 bit markers
-    - Up to 50 unique markers (IDs 0-49)
-    - Better error correction than 4×4
-
--   **DICT_5X5_100**
-    - 5×5 bit markers
-    - Up to 100 unique markers (IDs 0-99)
-
--   **DICT_5X5_250**
-    - 5×5 bit markers
-    - Up to 250 unique markers (IDs 0-249)
-
--   **DICT_5X5_1000**
-    - 5×5 bit markers
-    - Up to 1000 unique markers (IDs 0-999)
-
--   **DICT_6X6_50**
-    - 6×6 bit markers
-    - Up to 50 unique markers (IDs 0-49)
-    - Higher error correction
-
--   **DICT_6X6_100**
-    - 6×6 bit markers
-    - Up to 100 unique markers (IDs 0-99)
-
--   **DICT_6X6_250**
-    - 6×6 bit markers
-    - Up to 250 unique markers (IDs 0-249)
-
--   **DICT_6X6_1000**
-    - 6×6 bit markers
-    - Up to 1000 unique markers (IDs 0-999)
-
--   **DICT_7X7_50**
-    - 7×7 bit markers
-    - Up to 50 unique markers (IDs 0-49)
-    - Highest error correction, largest marker pattern
-
--   **DICT_7X7_100**
-    - 7×7 bit markers
-    - Up to 100 unique markers (IDs 0-99)
-
--   **DICT_7X7_250**
-    - 7×7 bit markers
-    - Up to 250 unique markers (IDs 0-249)
-
--   **DICT_7X7_1000**
-    - 7×7 bit markers
-    - Up to 1000 unique markers (IDs 0-999)
-
-**Validation Rules:**
-- Marker ID must be a non-negative integer within the dictionary's range (0 to max-1)
-- Invalid IDs will cause that entry to be skipped with a warning
-- Larger dictionaries (more bits) provide better error correction but require larger physical size for reliable detection
-
-------------------------------------------------------------------------
-
-## 6. Supported AprilTag Families
-
-AprilTags use families that determine the encoding scheme and error correction capabilities.
-
--   **tag36h11** (recommended default)
-    - 36-bit encoding
-    - Hamming distance 11
-    - Up to 58,797 unique tags
-    - Good balance of size and error correction
-    - Most commonly used family
-
--   **tag25h9**
-    - 25-bit encoding
-    - Hamming distance 9
-    - Up to 35,588 unique tags
-    - Smaller pattern, faster detection
-
--   **tag16h5**
-    - 16-bit encoding
-    - Hamming distance 5
-    - Up to 30 unique tags
-    - Smallest pattern, limited unique tags
-
--   **tag21h7**
-    - 21-bit encoding
-    - Hamming distance 7
-    - Up to 127 unique tags
-    - Small pattern, moderate error correction
-
--   **tagStandard41h12**
-    - 41-bit encoding
-    - Hamming distance 12
-    - Up to 2,114,074 unique tags
-    - Large pattern, high error correction
-
--   **tagStandard52h13**
-    - 52-bit encoding
-    - Hamming distance 13
-    - Up to 58,535 unique tags
-    - Very large pattern, highest error correction
-
--   **tagCircle21h7**
-    - 21-bit encoding
-    - Hamming distance 7
-    - Circular marker design
-    - Up to 127 unique tags
-
--   **tagCircle49h12**
-    - 49-bit encoding
-    - Hamming distance 12
-    - Circular marker design
-    - Up to 2,114,074 unique tags
-
--   **tagCustom48h12**
-    - 48-bit encoding
-    - Hamming distance 12
-    - Custom family
-    - Up to 58,535 unique tags
-
-**Validation Rules:**
-- Tag ID must be a non-negative integer within the family's valid range
-- Invalid IDs will cause that entry to be skipped with a warning
-- Families with higher Hamming distances provide better error correction but may require larger physical size
-- Circular families (tagCircle*) have different visual appearance but same detection properties
-
-------------------------------------------------------------------------
-
-## 7. Marker Size Recommendations
-
-**ArUco Markers:**
-- **Close range (< 1m):** 30-50mm markers work well
-- **Medium range (1-3m):** 50-100mm markers recommended
-- **Long range (3-10m):** 100-150mm markers recommended
-- **Very long range (> 10m):** 150-200mm markers may be required
-- Larger dictionaries (6×6, 7×7) may need slightly larger physical size for reliable detection
-- Consider printing resolution: 300 DPI ensures sharp edges for detection algorithms
-
-**AprilTags:**
-- **Close range (< 1m):** 30-50mm tags work well
-- **Medium range (1-3m):** 50-100mm tags recommended
-- **Long range (3-10m):** 100-150mm tags recommended
-- **Very long range (> 10m):** 150-200mm tags may be required
-- tag36h11 is the most commonly used family and works well at various distances
-- Higher Hamming distance families (tagStandard41h12, tagStandard52h13) may require larger physical size
-
-**Layout Considerations:**
-- For 80-100mm markers, typically 1-2 markers per row on A4 (portrait)
-- For 50-70mm markers, typically 2-3 markers per row
-- For 30-40mm markers, typically 3-4 markers per row
-- Always ensure adequate quiet zone and border for reliable detection
-- Test with your specific camera and detection algorithm to determine optimal size
-
-------------------------------------------------------------------------
-
-## 8. Output Document
-
-### 8.1 Format
-
--   Single **PDF file**
--   Paper size: **A4**, portrait
--   Margins configurable per YAML/CLI
--   Multiple labels automatically placed based on:
-    -   Available space
-    -   Label size
-    -   ArUco/AprilTag + text layout
-
-### 8.2 Label Structure
-
-Each label contains a single ArUco marker or AprilTag, and optional human-readable text beneath the marker. These markers are typically larger than QR codes for distance detection.
-
-**ArUco marker label:**
-
-    +------------------------------------+
-    |                                    |
-    |        [ARUCO MARKER]              |
-    |         100mm × 100mm               |
-    |                                    |
-    |        MARKER-001                  |
-    |                                    |
-    +------------------------------------+
-
-**AprilTag label:**
-
-    +------------------------------------+
-    |                                    |
-    |        [APRILTAG]                  |
-    |         90mm × 90mm                 |
-    |                                    |
-    |        MARKER-001                  |
-    |                                    |
-    +------------------------------------+
-
-**Positioning Rules:**
-- Marker is centered within the label area
-- Text is positioned at `position` (top/bottom) with `margin_mm` spacing
-- Text alignment follows `alignment` setting (left/center/right)
-- Markers are square (size_mm × size_mm)
-- Quiet zone is included around the marker for reliable detection
-
-**Configurable elements:**
-- ArUco/AprilTag size (square, typically larger than QR codes)
-- Label width/height
-- Font size, family, position, and alignment for human-readable text
-- Spacing between all elements
-- ArUco dictionary and AprilTag family selection
-
-------------------------------------------------------------------------
-
-## 9. Layout Logic
-
-### 9.1 Page Area Calculation
-
-1. **Compute usable page area:**
-   - A4 dimensions: 210mm × 297mm (portrait)
-   - Usable width = 210mm - (2 × margin_mm)
-   - Usable height = 297mm - (2 × margin_mm)
-
-### 9.2 Label Grid Calculation
-
-2. **Determine label grid:**
-
-   **If `label_width_mm` and `label_height_mm` are specified:**
-   - Labels per row = floor((usable_width + horizontal_gap_mm) / (label_width_mm + horizontal_gap_mm))
-   - Labels per column = floor((usable_height + vertical_gap_mm) / (label_height_mm + vertical_gap_mm))
-   - Validate that at least 1 label fits in each direction
-
-   **If `labels_per_row` and `labels_per_column` are specified (and dimensions not):**
-   - Label width = (usable_width - (labels_per_row - 1) × horizontal_gap_mm) / labels_per_row
-   - Label height = (usable_height - (labels_per_column - 1) × vertical_gap_mm) / labels_per_column
-
-   **Validation:**
-   - Total required width = (labels_per_row × label_width_mm) + ((labels_per_row - 1) × horizontal_gap_mm)
-   - Total required height = (labels_per_column × label_height_mm) + ((labels_per_column - 1) × vertical_gap_mm)
-   - Must fit within usable page area
-
-### 9.3 Position Calculation
-
-3. **Calculate label positions (top-left corner of each label):**
-
-   For label at row `r` (0-indexed) and column `c` (0-indexed):
-   - X position = margin_mm + (c × (label_width_mm + horizontal_gap_mm))
-   - Y position = margin_mm + (r × (label_height_mm + vertical_gap_mm))
-
-   Labels are placed left-to-right, top-to-bottom.
-
-### 9.4 Content Positioning Within Label
-
-4. **Position ArUco/AprilTag marker within label:**
-   - Marker X = label_x + (label_width_mm - marker_size_mm) / 2
-   - Marker Y = label_y + text_margin + font_height (if text at top) or calculated based on available space (if text at bottom)
-   - Marker is centered horizontally
-   - Quiet zone is included in the marker_size_mm (internal to marker generation)
-
-5. **Position text:**
-   - If position = "bottom": Y = label_y + label_height_mm - font_size_pt - margin_mm
-   - If position = "top": Y = label_y + margin_mm
-   - X alignment based on `alignment` setting
-   - Text is typically placed below the marker
-
-### 9.5 Generation Loop
-
-6. **Loop through ID list:**
-   - For each ID:
-     - **If ArUco mode enabled:**
-       - Validate ArUco ID is within dictionary range
-       - Generate ArUco marker image (PNG format, at specified DPI)
-     - **If AprilTag mode enabled:**
-       - Validate AprilTag ID is within family range
-       - Generate AprilTag image (PNG format, at specified DPI)
-     - Calculate label position (row, column)
-     - If label position exceeds current page, create new page
-     - Draw marker and text at calculated positions
-   - Handle partial rows: Last row may not be full (labels left-aligned)
-
-### 9.6 Page Management
-
-7. **Page overflow:**
-   - When current row × labels_per_row + current_column >= labels_per_row × labels_per_column, start new page
-   - Reset row and column counters
-   - Continue until all IDs processed
-   - **For ArUco/AprilTag:** Typically fewer markers per page due to larger sizes (e.g., 2×2 or 1×2 grid for 80-100mm markers)
-
-------------------------------------------------------------------------
-
-## 10. Libraries & Tools
-
--   **UV** -- package/env manager, always creating virtual environment under project root folder at ./.venv
--   **Python** -- runtime (Python 3.10+)
--   **opencv-python** -- ArUco marker generation (cv2.aruco module)
--   **apriltag** -- AprilTag generation (Python wrapper for AprilTag library)
--   **reportlab** -- PDF drawing & layout
--   **Pillow (PIL)** -- image manipulation and format conversion
--   **PyYAML** -- YAML config parsing
--   **click** -- CLI argument parsing (chosen over argparse for better UX)
--   **numpy** -- numerical operations (required by opencv-python and apriltag)
-
-**Technical Details:**
-- ArUco markers generated using OpenCV's aruco module, converted to PIL Image
-- AprilTags generated using apriltag library, converted to PIL Image
-- All images generated at specified DPI (default 300) for print quality
-- PDF uses reportlab's Canvas for precise positioning
-- Images are embedded as raster (PNG) to ensure compatibility
-- ArUco markers include border bits and quiet zone for reliable detection
-- AprilTags include border and quiet zone for reliable detection
-
-------------------------------------------------------------------------
-
-## 11. Directory Structure (recommended)
-
-    qr_barcode_generator/
-    │
-    ├── src/
-    │   ├── main.py
-    │   ├── config.py
-    │   ├── data_loader.py
-    │   ├── aruco_generator.py
-    │   ├── apriltag_generator.py
-    │   ├── layout_engine.py
-    │   └── pdf_exporter.py
-    │
-    ├── config_aruco.yaml
-    ├── config_apriltag.yaml
-    ├── markers.csv
-    ├── README.md
-    └── pyproject.toml
-
-**Note:** This structure is shared with the QR/Barcode generator. The `aruco_generator.py` and `apriltag_generator.py` modules are specific to marker generation.
-
-------------------------------------------------------------------------
-
-## 12. Error Handling & Validation
-
-### 12.1 Input Validation
-
-- **CSV file:**
-  - File must exist and be readable
-  - Must have UTF-8 encoding (auto-detect with fallback)
-  - Header row required
-  - Rows with missing `id` column are skipped with warning
-  - Empty rows are skipped silently
-
-- **ID validation:**
-  - ArUco IDs are validated against dictionary range (0 to max-1)
-  - AprilTag IDs are validated against family range
-  - Invalid entries are logged with warning and skipped
-  - Processing continues with remaining valid entries
-  - Summary report at end: "Generated X labels, skipped Y invalid entries"
-
-### 12.2 Configuration Validation
-
-- **File paths:**
-  - Input CSV must exist
-  - Output directory must exist and be writable
-  - If `overwrite: false` and output file exists, error with message
-
-- **Value ranges:**
-  - DPI: 72-600 (default: 300)
-  - Margins: ≥ 0, must leave ≥ 20mm usable space
-  - Label dimensions: Must fit within page with gaps
-  - Font size: 6-72 points
-  - ArUco size: 10-200mm (recommended: 50-150mm for distance detection)
-  - AprilTag size: 10-200mm (recommended: 50-150mm for distance detection)
-  - ArUco border bits: 1-3 (default: 1)
-  - AprilTag border: 1-5mm (default: 2mm)
-
-- **Conflicts:**
-  - If both label dimensions and labels_per_row/column specified, dimensions take precedence
-  - Warning logged when labels_per_row/column are ignored
-  - If both ArUco and AprilTag enabled, ArUco takes precedence (warning logged)
-
-### 12.3 Generation Errors
-
-- **ArUco generation failures:**
-  - ID out of dictionary range: entry skipped
-  - Dictionary not found: fatal error at startup
-  - Library errors: entry skipped with error message
-  - Error logged: "Failed to generate ArUco marker for ID: {id} - {error}"
-
-- **AprilTag generation failures:**
-  - ID out of family range: entry skipped
-  - Family not found: fatal error at startup
-  - Library errors: entry skipped with error message
-  - Error logged: "Failed to generate AprilTag for ID: {id} - {error}"
-
-- **PDF generation errors:**
-  - Disk full: fatal error, exit with code 1
-  - Permission denied: fatal error, exit with code 1
-  - Invalid page dimensions: fatal error at startup
-
-### 12.4 Error Reporting
-
-- Warnings printed to stderr
-- Errors printed to stderr
-- Final summary printed to stdout:
-  - Total IDs processed
-  - Successfully generated labels
-  - Skipped entries (with reasons)
-  - Output file path
-- Exit codes:
-  - 0: Success (all entries processed, some may have been skipped)
-  - 1: Fatal error (cannot continue)
-
-------------------------------------------------------------------------
-
-## 13. Output File Handling
-
-### 13.1 File Naming
-
-- Output file path specified in config or CLI
-- If directory doesn't exist, create it (with parent directories)
-- File extension should be `.pdf` (auto-added if missing)
-
-### 13.2 Overwrite Behavior
-
-- **If `overwrite: false` (default):**
-  - If output file exists, error: "Output file exists: {path}. Use --overwrite to replace."
-  - Exit with code 1
-
-- **If `overwrite: true`:**
-  - Existing file is replaced without warning
-  - Previous version is lost
-
-### 13.3 Multiple Runs
-
-- Each run generates a complete PDF from scratch
-- No incremental generation or merging
-- To append, user must combine CSV files and regenerate
-
-------------------------------------------------------------------------
-
-## 14. Summary
-
-This design defines a flexible, scalable system for generating
-print-ready A4 sheets containing ArUco markers, AprilTags, and human-readable
-text for each ID. The configuration-driven approach (with YAML and CLI
-overrides) makes the tool suitable for both experimentation and
-production use. Git and UV ensure reproducibility and portability.
-
-**Key Features:**
-- ArUco markers for computer vision and camera calibration applications
-- AprilTags for robotics, pose estimation, and augmented reality
-- Larger marker sizes optimized for distance detection
-- Flexible configuration supporting multiple use cases
-- Consistent PDF output format
-- Support for multiple dictionaries and families
-
-This document serves as the foundational blueprint for implementation, working in conjunction with the main QR & Barcode design specification.
+# AprilTag run
+python generate.py \
+  --config config_apriltag.yaml \
+  --apriltag-enabled \
+  --apriltag-family tag36h11 \
+  --apriltag-pattern-size-mm 90 \
+  --csv markers.csv \
+  --dpi 300 \
+  --overwrite
+```
 
+General rules:
+
+- When `--config` is provided, the YAML is loaded first.
+- CLI options override individual fields from YAML.
+- If no `--config` is provided, sane defaults are used where possible; some options (e.g., `--csv`, marker mode) are required.
+
+### 5.3 Dry‑Run / Validation Mode
+
+Optional CLI flag:
+
+```bash
+python generate.py --config config_aruco.yaml --dry-run
+```
+
+Behavior:
+
+- Load and validate YAML, CSV, and all derived layout calculations.
+- Report validation results and exit without generating a PDF.
+- Exit code:
+  - `0` if configuration and inputs are valid.
+  - `1` if any fatal error is detected.
+
+---
+
+## 6. Marker Geometry and Sizing Conventions
+
+To avoid ambiguity around sizes, the following conventions are used:
+
+### 6.1 Coordinate System
+
+- All high-level layout is done in **millimeters** (mm).
+- Conversion to pixels is done using `dpi`:
+  - `pixels = mm / 25.4 * dpi`
+- Conversion from mm to PDF points uses:
+  - `points = mm / 25.4 * 72`
+
+### 6.2 Geometry Definitions
+
+#### 6.2.1 ArUco
+
+Config fields:
+
+- `pattern_size_mm`:
+  - Size of the **inner black/white code pattern**, **excluding** quiet zone.
+  - This pattern includes the ArUco internal border bits as generated by OpenCV.
+- `quiet_zone_mm`:
+  - Additional white margin around the entire pattern.
+- Effective footprint:
+  - `marker_footprint_mm = pattern_size_mm + 2 * quiet_zone_mm`
+
+#### 6.2.2 AprilTag
+
+Config fields:
+
+- `pattern_size_mm`:
+  - Size of the encoded tag pattern (the inner AprilTag code).
+- `border_mm`:
+  - Thickness of the solid black border around the pattern.
+- `quiet_zone_mm`:
+  - Additional white margin outside the border.
+- Effective footprint:
+  - `marker_footprint_mm = pattern_size_mm + 2 * border_mm + 2 * quiet_zone_mm`
+
+### 6.3 Label Fit Constraints
+
+A label has:
+
+- `label_width_mm`
+- `label_height_mm`
+
+Text may be rendered either **above** or **below** the marker, depending on `text.position`.
+
+The tool must validate that:
+
+1. `marker_footprint_mm <= label_width_mm - 2 * min_label_padding_mm`
+2. The vertical space allows both marker and text (if enabled), plus padding:
+   - For bottom text:
+
+     ```text
+     label_height_mm >= marker_footprint_mm
+                       + text_margin_mm
+                       + text_height_mm
+                       + min_label_padding_mm
+     ```
+
+   - For top text, symmetric logic.
+3. If `text.position == "none"`, the constraint reduces to having enough space for the marker footprint with padding.
+
+If any label size is insufficient, the configuration is considered invalid and the tool exits with a helpful error message.
+
+---
+
+## 7. Page and Layout Calculations
+
+### 7.1 Page Area
+
+For A4:
+
+- Portrait: 210mm × 297mm
+- Landscape: 297mm × 210mm
+
+Usable area:
+
+```text
+usable_width_mm  = page_width_mm  - 2 * margin_mm
+usable_height_mm = page_height_mm - 2 * margin_mm
+```
+
+Margins must be >= 0 and must leave at least `min_usable_space_mm` (e.g., 20mm) in both dimensions.
+
+### 7.2 Label Grid
+
+The layout is defined either by **explicit label dimensions** or by **label counts**:
+
+1. If `label_width_mm` and `label_height_mm` are specified:
+   - Compute maximum possible labels:
+
+     ```text
+     labels_per_row    = floor((usable_width_mm  + horizontal_gap_mm) /
+                               (label_width_mm   + horizontal_gap_mm))
+     labels_per_column = floor((usable_height_mm + vertical_gap_mm) /
+                               (label_height_mm  + vertical_gap_mm))
+     ```
+
+   - If result is < 1 in either dimension, configuration is invalid.
+
+2. If `label_width_mm` and `label_height_mm` are NOT specified, but `labels_per_row` and `labels_per_column` are:
+   - Derive label dimensions:
+
+     ```text
+     label_width_mm  = (usable_width_mm  - (labels_per_row    - 1) * horizontal_gap_mm) /
+                       labels_per_row
+
+     label_height_mm = (usable_height_mm - (labels_per_column - 1) * vertical_gap_mm) /
+                       labels_per_column
+     ```
+
+3. If **both** dimensions and counts are specified:
+   - Dimensions take precedence; counts are recomputed.
+   - A warning is logged that `labels_per_row/labels_per_column` were ignored.
+
+### 7.3 Label Positioning
+
+For a label at row `r` (0‑indexed) and column `c` (0‑indexed):
+
+```text
+x_label_mm = margin_mm + c * (label_width_mm  + horizontal_gap_mm)
+y_label_mm = margin_mm + r * (label_height_mm + vertical_gap_mm)
+```
+
+Labels are filled **left‑to‑right, top‑to‑bottom**. On the last page, partial rows are allowed. v1 behavior for the last row is **left aligned**; a future enhancement may support `last_row_alignment: center`.
+
+### 7.4 Marker and Text Inside Labels
+
+Given a label box:
+
+- Marker is **horizontally centered** at:
+
+  ```text
+  x_marker_mm = x_label_mm + (label_width_mm - marker_footprint_mm) / 2
+  ```
+
+- Vertical placement depends on `text.position`:
+
+  - If `text.position == "bottom"`:
+    - Text baseline Y:
+
+      ```text
+      y_text_baseline_mm = y_label_mm + label_height_mm - text_margin_mm - text_height_mm
+      ```
+
+    - Marker top Y:
+
+      ```text
+      y_marker_mm = y_label_mm + (y_text_baseline_mm - y_label_mm - text_margin_mm - marker_footprint_mm) / 2
+      ```
+
+      This centers the marker vertically in the space above the text (with padding).
+
+  - If `text.position == "top"`:
+    - Text baseline Y:
+
+      ```text
+      y_text_baseline_mm = y_label_mm + text_margin_mm + text_height_mm
+      ```
+
+    - Marker bottom aligned similarly, centered in the remaining space below.
+
+  - If `text.position == "none"`:
+    - Marker is centered vertically in the label:
+
+      ```text
+      y_marker_mm = y_label_mm + (label_height_mm - marker_footprint_mm) / 2
+      ```
+
+Horizontal text alignment follows `text.alignment` within the label box.
+
+---
+
+## 8. Marker Generation
+
+### 8.1 ArUco Generation
+
+- Library: **OpenCV** (`opencv-contrib-python`) using `cv2.aruco`.
+- Steps:
+  1. Map `dictionary` string (e.g., `DICT_5X5_100`) to OpenCV constant.
+  2. Validate numeric ID:
+     - Ensure `0 <= id < max_id_for_dictionary`.
+  3. Compute pixel size:
+
+     ```text
+     pattern_pixels = round(pattern_size_mm / 25.4 * dpi)
+     ```
+
+  4. Generate marker using `aruco.drawMarker(dictionary, id, pattern_pixels)`.
+  5. Add quiet zone in pixel space (white padding) according to `quiet_zone_mm`.
+  6. Convert to **PIL Image** (mode "L" or "RGB") for embedding into PDF.
+
+- Error conditions:
+  - Unknown dictionary name → fatal error at startup.
+  - ID out of range → row skipped (or fatal if `require_all_ids_valid: true`).
+
+### 8.2 AprilTag Generation
+
+- Library: `apriltag` (or a chosen AprilTag generator library).
+- Steps:
+  1. Map `family` string (e.g., `tag36h11`) to a supported family.
+  2. Validate numeric ID against library-supported range.
+  3. Generate a base tag image at a convenient resolution (e.g., pattern N pixels).
+  4. Rescale to desired `pattern_size_mm` at given `dpi`.
+  5. Add `border_mm` and `quiet_zone_mm` in pixel space:
+     - Draw a solid black border around pattern.
+     - Add white margin around border.
+  6. Convert to PIL Image for PDF embedding.
+
+- Error conditions:
+  - Unknown family string → fatal error at startup.
+  - ID out of valid range → row skipped (or fatal with `require_all_ids_valid: true`).
+
+> Implementation detail: The concrete AprilTag library must be verified to support the families listed in Section 9. If not, the supported families subset should be enforced and documented at runtime (e.g., in `--help` or during startup).
+
+---
+
+## 9. Supported Marker Sets
+
+### 9.1 ArUco Dictionaries
+
+The following dictionaries are supported (via OpenCV):
+
+- `DICT_4X4_50` (IDs 0–49)
+- `DICT_4X4_100` (IDs 0–99)
+- `DICT_4X4_250` (IDs 0–249)
+- `DICT_4X4_1000` (IDs 0–999)
+- `DICT_5X5_50` (IDs 0–49) — **recommended default**
+- `DICT_5X5_100` (IDs 0–99)
+- `DICT_5X5_250` (IDs 0–249)
+- `DICT_5X5_1000` (IDs 0–999)
+- `DICT_6X6_50` (IDs 0–49)
+- `DICT_6X6_100` (IDs 0–99)
+- `DICT_6X6_250` (IDs 0–249)
+- `DICT_6X6_1000` (IDs 0–999)
+- `DICT_7X7_50` (IDs 0–49)
+- `DICT_7X7_100` (IDs 0–99)
+- `DICT_7X7_250` (IDs 0–249)
+- `DICT_7X7_1000` (IDs 0–999)
+
+Validation rules:
+
+- Marker ID must be int in `[0, max_id]`.
+- Invalid IDs are logged and skipped (or cause fatal error if configured).
+
+### 9.2 AprilTag Families
+
+Supported families (subject to the chosen library):
+
+- `tag36h11` — **recommended default**
+- `tag25h9`
+- `tag16h5`
+- `tag21h7`
+- `tagStandard41h12`
+- `tagStandard52h13`
+- `tagCircle21h7`
+- `tagCircle49h12`
+- `tagCustom48h12`
+
+Validation rules:
+
+- Tag ID must be a non‑negative integer within the valid range for that family.
+- The actual maximum ID per family is defined either:
+  - By the library itself (if queryable), or
+  - By a built‑in static table matching the library’s implementation.
+- Invalid IDs are logged and skipped (or fatal if required).
+
+---
+
+## 10. Marker Size Recommendations
+
+These recommendations guide typical usage, especially for warehouse and robotics work.
+
+### 10.1 ArUco
+
+- **Close range (< 1 m):** 30–50 mm `pattern_size_mm`
+- **Medium range (1–3 m):** 50–100 mm
+- **Long range (3–10 m):** 100–150 mm
+- **Very long range (> 10 m):** 150–200 mm
+
+Notes:
+
+- Larger dictionaries (6×6, 7×7) require more detail and may need slightly larger pattern sizes for reliable detection.
+- Use at least 300 DPI for stable edges.
+
+### 10.2 AprilTags
+
+Similar ranges:
+
+- **Close range (< 1 m):** 30–50 mm pattern
+- **Medium range (1–3 m):** 50–100 mm
+- **Long range (3–10 m):** 100–150 mm
+- **Very long range (> 10 m):** 150–200 mm
+
+Notes:
+
+- `tag36h11` is a robust default for robotics.
+- Families with higher Hamming distances may benefit from larger sizes.
+
+### 10.3 Layout and Count
+
+Approximate number of labels per row for A4 portrait (assuming moderate margins and gaps):
+
+- 80–100 mm markers → 1–2 labels per row.
+- 50–70 mm markers → 2–3 labels per row.
+- 30–40 mm markers → 3–4 labels per row.
+
+The layout engine uses exact mm and gap values to compute precise limits.
+
+---
+
+## 11. Output Document
+
+### 11.1 Format
+
+- Single output **PDF file** (v1).
+- Page size: A4.
+- Orientation: configured (`portrait` or `landscape`).
+- Margins, labels, and gaps as computed in millimeters.
+
+Future extension (not in v1):
+
+- Optional raster outputs (e.g., PNG per label or per page).
+
+### 11.2 Label Structure
+
+Each label contains:
+
+- One marker (ArUco or AprilTag) centered in the label box.
+- Optional text above or below.
+- Respect for quiet zones and borders from Section 6.
+
+Example conceptual layout (ArUco label):
+
+```text
++----------------------------------------+
+|                                        |
+|                [ARUCO]                 |
+|            (pattern+quiet)             |
+|                                        |
+|              MARKER-001                |
++----------------------------------------+
+```
+
+### 11.3 Page Decorations (Optional)
+
+If enabled in `marker_common`:
+
+- A **scale bar** (e.g., 100 mm) at the bottom of each page.
+- A small note, e.g.:
+
+  > "Print at 100% / no scaling. The scale bar should measure exactly 10 cm."
+
+These elements help ensure correct physical scaling in print.
+
+---
+
+## 12. Layout Engine and Generation Loop
+
+### 12.1 Core Responsibilities
+
+The layout engine:
+
+- Receives:
+  - A sequence of `(PIL.Image, label_text, numeric_id)` tuples.
+  - Layout configuration (page size, labels per row/column, mm sizes).
+- Computes:
+  - Page count.
+  - Positions of each label on each page.
+- Emits:
+  - Drawing commands to the PDF exporter.
+
+### 12.2 Generation Loop
+
+1. Parse arguments and load YAML.
+2. Resolve final configuration (apply CLI overrides).
+3. Validate configuration (Section 13).
+4. Load CSV rows and resolve numeric IDs.
+5. For each valid row:
+   - Generate marker image (ArUco or AprilTag).
+   - Record `(image, id_text)` pair.
+6. Initialize PDF canvas.
+7. For each label index `i`:
+   - Compute page, row, column.
+   - Compute label position.
+   - Place marker and text inside label.
+   - Start new page as needed.
+8. Draw scale bar and notes per page if configured.
+9. Save PDF file.
+
+---
+
+## 13. Validation, Errors, and Logging
+
+### 13.1 Input File Validation
+
+- CSV:
+  - Must exist and be readable.
+  - Must have a header row.
+  - Non‑UTF‑8 encodings are rejected or require explicit override.
+- Output:
+  - Parent directory must exist or be creatable.
+  - If `overwrite: false` and file exists → fatal error.
+  - If `overwrite: true` → existing file is replaced.
+
+### 13.2 Configuration Validation
+
+Checks on startup:
+
+- Only one of `aruco.enabled` / `apriltag.enabled` is true.
+- `dpi` in `[72, 600]` (configurable range).
+- Margins >= 0 and leave at least 20 mm usable space.
+- Label sizing valid; at least 1 label fits in both dimensions.
+- Marker footprint fits into label along both axes with padding.
+- Text (if enabled) fits into label together with marker.
+- Dictionary/family names are recognized by the respective generator.
+- If `validation.require_all_ids_valid: true`, any invalid numeric ID aborts the run.
+
+### 13.3 ID Validation
+
+For each row:
+
+- If numeric ID is required (depending on mode/config) and invalid:
+  - If `require_all_ids_valid: true` → fatal error.
+  - Else → row is skipped with a warning.
+
+### 13.4 Generation Errors
+
+- Marker generation errors (library exceptions) → row skipped with error log.
+- PDF generation errors (I/O, permissions, invalid geometry) → fatal error (exit 1).
+
+### 13.5 Logging and Summary
+
+Logging config:
+
+- `logging.level`: `"debug"`, `"info"`, `"warning"`, `"error"`.
+
+Runtime behavior:
+
+- INFO: general progress, ID mapping, summary.
+- WARNING: skipped rows, non‑fatal issues.
+- ERROR: fatal errors before exit.
+
+On completion, a summary is printed:
+
+- Number of CSV rows processed.
+- Number of labels generated.
+- Number of rows skipped and reasons (aggregated).
+- Output PDF path.
+
+Optional machine‑readable summary:
+
+- If `logging.summary_json` is set:
+  - A JSON file is written with:
+    - `rows_total`
+    - `labels_generated`
+    - `rows_skipped`
+    - `skipped_reasons` (grouped counts)
+    - `output_file`
+    - `mode` ("aruco" or "apriltag")
+
+---
+
+## 14. Libraries, Tools, and Directory Structure
+
+### 14.1 Libraries and Tools
+
+- **UV** — environment and dependency manager (virtualenv at `./.venv`).
+- **Python** — 3.10+ recommended.
+- **opencv-contrib-python** — ArUco marker generation (`cv2.aruco`).
+- **apriltag** (or compatible) — AprilTag generation.
+- **reportlab** — PDF drawing and layout.
+- **Pillow (PIL)** — image manipulation and conversion.
+- **PyYAML** — YAML config parsing.
+- **click** — CLI argument parsing.
+- **numpy** — required by OpenCV / AprilTag libraries.
+
+### 14.2 Directory Structure (Recommended)
+
+```text
+qr_barcode_generator/
+│
+├── src/
+│   ├── main.py                 # CLI entrypoint
+│   ├── config.py               # config loading and validation
+│   ├── data_loader.py          # CSV/ID loading
+│   ├── markers/
+│   │   ├── base.py             # MarkerGenerator interface
+│   │   ├── aruco_generator.py  # ArUco implementation
+│   │   └── apriltag_generator.py   # AprilTag implementation
+│   ├── layout_engine.py        # Label/grid calculations
+│   ├── pdf_exporter.py         # PDF drawing using reportlab
+│   └── logging_utils.py        # logging & summary support
+│
+├── config_aruco.yaml
+├── config_apriltag.yaml
+├── markers.csv
+├── README.md
+└── pyproject.toml
+```
+
+`markers/base.py` defines a minimal interface, e.g.:
+
+```python
+class MarkerGenerator:
+    def generate(self, numeric_id: int, dpi: int) -> "PIL.Image.Image":
+        ...
+```
+
+ArUco and AprilTag generator classes implement this interface.
+
+---
+
+## 15. Summary
+
+This refined specification describes a **configuration-driven, robust, and extensible** ArUco & AprilTag document generator that integrates cleanly with an existing QR & Barcode generator project.
+
+Key properties:
+
+- **Single-mode per run** (ArUco or AprilTag) with clear validation.
+- Millimeter-based, DPI‑aware **layout engine** for reproducible physical sizes.
+- Flexible **YAML + CLI configuration** with detailed validation and dry-run mode.
+- Explicit **geometry conventions** separating pattern, border, and quiet zone.
+- Strong emphasis on **error handling, logging, and summarization**.
+
+The spec is designed for practical use in **robotics, drones, and warehouse scanning** scenarios where physical accuracy, marker robustness, and good developer ergonomics all matter.
